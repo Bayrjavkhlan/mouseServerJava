@@ -15,16 +15,15 @@ public class Main {
             return; // Exit if unable to get the IP address
         }
 
-        // Print the local IP address for debugging
-        System.out.println("Local IP Address: " + localIp);
+        // Start WebSocket Server
+        WebSocketConnection webSocketConnection = new WebSocketConnection(localIp, 8080);
+        webSocketConnection.startServer();
 
-        // Create an instance of WebSocketConnection
-        WebSocketConnection webSocketConnection = new WebSocketConnection();
+        // Generate and display QR Code
+        IpQrGenerator ipQrGenerator = new IpQrGenerator(webSocketConnection);
+        ipQrGenerator.generateAndDisplayIpQr();
 
-        // Start the WebSocket server on the retrieved IP address and port
-        webSocketConnection.startServer(localIp, 8080);
-
-        // Create an instance of MouseMovement
+        // Create Mouse Movement instance
         MouseMovement mouseMovement;
         try {
             mouseMovement = new MouseMovement(webSocketConnection);
@@ -33,17 +32,14 @@ public class Main {
             return; // Exit if Robot initialization fails
         }
 
-        // Simulate waiting for some time before checking the values (waiting for the client to send data)
-        try {
-            Thread.sleep(5000); // Wait for 5 seconds (adjust as needed)
-        } catch (InterruptedException e) {
-            e.printStackTrace();
+        // Process WebSocket data for mouse movement
+        while (true) {
+            mouseMovement.moveMouse(webSocketConnection.getX(), webSocketConnection.getY());
+            try {
+                Thread.sleep(100); // Adjust delay as needed
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
-
-        // Move the mouse based on the x and y values
-        mouseMovement.moveMouse(); // Move the mouse to the coordinates
-
-        // Optionally, simulate a mouse click
-        mouseMovement.clickMouse(); // You can call this if you want to simulate a click after moving
     }
 }
