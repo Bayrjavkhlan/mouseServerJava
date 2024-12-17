@@ -26,17 +26,39 @@ public class Main {
         // Create Mouse Movement instance
         MouseMovement mouseMovement;
         try {
-            mouseMovement = new MouseMovement(webSocketConnection);
+            mouseMovement = new MouseMovement();
+            webSocketConnection.setMouseMovement(mouseMovement);
         } catch (AWTException e) {
             e.printStackTrace();
             return; // Exit if Robot initialization fails
         }
 
-        // Process WebSocket data for mouse movement
+        // Keep the application running
         while (true) {
-            mouseMovement.moveMouse(webSocketConnection.getX(), webSocketConnection.getY());
             try {
-                Thread.sleep(100); // Adjust delay as needed
+                if (webSocketConnection.isMotionMessageReceived()) {
+                    mouseMovement.moveMotionMouse(
+                        webSocketConnection.getMotionX(),
+                        webSocketConnection.getMotionY(),
+                        webSocketConnection.getMotionZ()
+                    );
+                }
+                
+                if (webSocketConnection.isTouchMessageReceived()) {
+                    mouseMovement.moveTouchMouse(
+                        webSocketConnection.getStateID(),
+                        webSocketConnection.getMoveX(),
+                        webSocketConnection.getMoveY(),
+                        webSocketConnection.getX0(),
+                        webSocketConnection.getY0(),
+                        webSocketConnection.getDx(),
+                        webSocketConnection.getDy(),
+                        webSocketConnection.getVx(),
+                        webSocketConnection.getVy()
+                    );
+                }
+                
+                Thread.sleep(100); // Prevent high CPU usage
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }

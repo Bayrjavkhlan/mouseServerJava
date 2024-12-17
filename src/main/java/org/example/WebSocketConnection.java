@@ -1,74 +1,82 @@
 package org.example;
 
-import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.WebSocket;
+import org.java_websocket.drafts.Draft;
+import org.java_websocket.exceptions.InvalidDataException;
 import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.handshake.ServerHandshakeBuilder;
+import org.java_websocket.server.WebSocketServer;
 import org.json.JSONObject;
 
 import java.net.InetSocketAddress;
 import java.util.function.Consumer;
 
 public class WebSocketConnection {
-
-    private WebSocketServer server;
-    private double x, y, z;  // Store the received motion values
+    private WebSocketServer motionServer;
+    private WebSocketServer touchServer;
+    private MouseMovement mouseMovement;
     private Consumer<Boolean> connectionStatusListener;
     private String ipAddress;
     private int port;
+
+    // Data fields for motion
+    private double motionX, motionY, motionZ;
+
+    // Data fields for touch
+    private double stateID, moveX, moveY, x0, y0, dx, dy, vx, vy;
+    private int numberActiveTouches;
+
+    private boolean motionMessageReceived = false;
+    private boolean touchMessageReceived = false;
 
     public WebSocketConnection(String ipAddress, int port) {
         this.ipAddress = ipAddress;
         this.port = port;
     }
 
-    // Set a listener for connection status changes
-    public void setConnectionStatusListener(Consumer<Boolean> listener) {
-        this.connectionStatusListener = listener;
-    }
-
-    // Notify connection status
-    private void notifyConnectionStatus(boolean isConnected) {
-        if (connectionStatusListener != null) {
-            connectionStatusListener.accept(isConnected);
-        }
+    public void setMouseMovement(MouseMovement mouseMovement) {
+        this.mouseMovement = mouseMovement;
     }
 
     public void startServer() {
-        server = new WebSocketServer(new InetSocketAddress(ipAddress, port)) {
+        motionServer = new WebSocketServer(new InetSocketAddress(ipAddress, port)) {
+            @Override
+            public ServerHandshakeBuilder onWebsocketHandshakeReceivedAsServer(WebSocket conn, Draft draft, ClientHandshake request) throws InvalidDataException {
+                ServerHandshakeBuilder builder = super.onWebsocketHandshakeReceivedAsServer(conn, draft, request);
+                String path = request.getResourceDescriptor();
+                if (!"/motion".equals(path) && !"/touch".equals(path)) {
+                    return null;
+                }
+                return builder;
+            }
+
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
-                System.out.println("New connection: " + conn.getRemoteSocketAddress());
-                notifyConnectionStatus(true);
+                String path = conn.getResourceDescriptor();
+                System.out.println("New " + path + " connection: " + conn.getRemoteSocketAddress());
+                if ("/motion".equals(path)) {
+                    notifyConnectionStatus(true);
+                }
             }
 
             @Override
             public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-                System.out.println("Closed connection: " + conn.getRemoteSocketAddress());
-                if (server.getConnections().isEmpty()) {
+                String path = conn.getResourceDescriptor();
+                System.out.println("Closed " + path + " connection: " + conn.getRemoteSocketAddress());
+                if ("/motion".equals(path) && !hasMotionConnections()) {
                     handleDisconnection();
                 }
             }
 
             @Override
             public void onMessage(WebSocket conn, String message) {
-                System.out.println("Message from client: " + message);
-                try {
-                    JSONObject json = new JSONObject(message);
-                    String type = json.getString("type");
+                String path = conn.getResourceDescriptor();
+                System.out.println(path + " message from client: " + message);
 
-                    if ("motion".equals(type)) {
-                        JSONObject data = json.getJSONObject("data");
-                        x = data.getDouble("x");
-                        y = data.getDouble("y");
-                        z = data.getDouble("z");
-                        processMotionData(x, y, z);
-                    } else if ("restart".equals(type)) {
-                        System.out.println("Restart command received.");
-                        handleDisconnection();
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error processing message: " + e.getMessage());
-                    conn.send("Error processing message.");
+                if ("/motion".equals(path)) {
+                    handleMotionMessage(message);
+                } else if ("/touch".equals(path)) {
+                    handleTouchMessage(message);
                 }
             }
 
@@ -79,12 +87,101 @@ public class WebSocketConnection {
 
             @Override
             public void onStart() {
-                System.out.println("Server started successfully");
+                System.out.println("WebSocket server started successfully");
             }
         };
 
-        server.start();
-        System.out.println("WebSocket server started on ws://" + ipAddress + ":" + port);
+        touchServer = new WebSocketServer(new InetSocketAddress(ipAddress, port + 2)) {
+            @Override
+            public ServerHandshakeBuilder onWebsocketHandshakeReceivedAsServer(WebSocket conn, Draft draft, ClientHandshake request) throws InvalidDataException {
+                ServerHandshakeBuilder builder = super.onWebsocketHandshakeReceivedAsServer(conn, draft, request);
+                String path = request.getResourceDescriptor();
+                if (!"/touch".equals(path)) {
+                    return null;
+                }
+                return builder;
+            }
+
+            @Override
+            public void onOpen(WebSocket conn, ClientHandshake handshake) {
+                String path = conn.getResourceDescriptor();
+                System.out.println("New " + path + " connection: " + conn.getRemoteSocketAddress());
+            }
+
+            @Override
+            public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+                String path = conn.getResourceDescriptor();
+                System.out.println("Closed " + path + " connection: " + conn.getRemoteSocketAddress());
+            }
+
+            @Override
+            public void onMessage(WebSocket conn, String message) {
+                String path = conn.getResourceDescriptor();
+                String unescapedMessage = message.substring(1, message.length() - 1).replace("\\\"", "\"");
+
+                System.out.println(path + " message from client: " + unescapedMessage);
+
+                if ("/touch".equals(path)) {
+                    handleTouchMessage(unescapedMessage);
+                }
+            }
+
+            @Override
+            public void onError(WebSocket conn, Exception ex) {
+                ex.printStackTrace();
+            }
+
+            @Override
+            public void onStart() {
+                System.out.println("Touch WebSocket server started successfully");
+            }
+        };
+
+        motionServer.start();
+        touchServer.start();
+        System.out.println("WebSocket servers started on:");
+        System.out.println("Motion: ws://" + ipAddress + ":" + port + "/motion");
+        System.out.println("Touch: ws://" + ipAddress + ":" + (port + 2) + "/touch");
+    }
+
+    private void handleMotionMessage(String message) {
+        try {
+            String cleanJson = message.substring(1, message.length() - 1).replace("\\\"", "\"");
+            JSONObject json = new JSONObject(cleanJson);
+            motionX = json.getDouble("x");
+            motionY = json.getDouble("y");
+            motionZ = json.getDouble("z");
+            motionMessageReceived = true;
+            touchMessageReceived = false;
+        } catch (Exception e) {
+            System.err.println("Error processing motion message: " + e.getMessage());
+        }
+    }
+
+    private void handleTouchMessage(String message) {
+        try {
+            String cleanJson = message.substring(1, message.length() - 1).replace("\\\"", "\"");
+            JSONObject json = new JSONObject(cleanJson);
+            stateID = json.getDouble("stateID");
+            moveX = json.getDouble("moveX");
+            moveY = json.getDouble("moveY");
+            x0 = json.getDouble("x0");
+            y0 = json.getDouble("y0");
+            dx = json.getDouble("dx");
+            dy = json.getDouble("dy");
+            vx = json.getDouble("vx");
+            vy = json.getDouble("vy");
+            numberActiveTouches = json.getInt("numberActiveTouches");
+            touchMessageReceived = true;
+            motionMessageReceived = false;
+        } catch (Exception e) {
+            System.err.println("Error processing touch message: " + e.getMessage());
+        }
+    }
+
+    private boolean hasMotionConnections() {
+        return motionServer.getConnections().stream()
+                .anyMatch(conn -> "/motion".equals(conn.getResourceDescriptor()));
     }
 
     private void handleDisconnection() {
@@ -101,30 +198,99 @@ public class WebSocketConnection {
         }
     }
 
-    private void processMotionData(double x, double y, double z) {
-        System.out.println("Received motion data: X=" + x + ", Y=" + y + ", Z=" + z);
-    }
-
     public void stopServer() throws InterruptedException {
-        if (server != null) {
-            server.stop();
-            System.out.println("WebSocket server stopped");
+        if (motionServer != null) {
+            motionServer.stop();
+            System.out.println("Motion WebSocket server stopped");
+        }
+        if (touchServer != null) {
+            touchServer.stop();
+            System.out.println("Touch WebSocket server stopped");
         }
     }
 
     public boolean isConnected() {
-        return server != null && !server.getConnections().isEmpty();
+        return motionServer != null && hasMotionConnections();
     }
 
-    public double getX() {
-        return x;
+    public void setConnectionStatusListener(Consumer<Boolean> listener) {
+        this.connectionStatusListener = listener;
     }
 
-    public double getY() {
-        return y;
+    private void notifyConnectionStatus(boolean isConnected) {
+        if (connectionStatusListener != null) {
+            connectionStatusListener.accept(isConnected);
+        }
     }
 
-    public double getZ() {
-        return z;
+    // Getter methods for motion data
+    public double getMotionX() {
+        return motionX;
+    }
+
+    public double getMotionY() {
+        return motionY;
+    }
+
+    public double getMotionZ() {
+        return motionZ;
+    }
+
+    // Getter methods for touch data
+    public double getStateID() {
+        return stateID;
+    }
+
+    public double getMoveX() {
+        return moveX;
+    }
+
+    public double getMoveY() {
+        return moveY;
+    }
+
+    public double getX0() {
+        return x0;
+    }
+
+    public double getY0() {
+        return y0;
+    }
+
+    public double getDx() {
+        return dx;
+    }
+
+    public double getDy() {
+        return dy;
+    }
+
+    public double getVx() {
+        return vx;
+    }
+
+    public double getVy() {
+        return vy;
+    }
+
+    public int getNumberActiveTouches() {
+        return numberActiveTouches;
+    }
+
+    public boolean isMotionMessageReceived() {
+        boolean wasReceived = motionMessageReceived;
+        motionMessageReceived = false;
+        return wasReceived;
+    }
+
+    public boolean isTouchMessageReceived() {
+        boolean wasReceived = touchMessageReceived;
+        touchMessageReceived = false;
+        return wasReceived;
+    }
+
+    @Deprecated
+    public boolean isMessageReceived() {
+        return isMotionMessageReceived() || isTouchMessageReceived();
     }
 }
